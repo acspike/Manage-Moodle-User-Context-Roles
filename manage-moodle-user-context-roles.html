@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Manage Moodle User Context Roles</title>
+  <style>
+label {
+  display: block;
+}
+input, select {
+  display: block;
+  margin-bottom: 5px;
+}
+  </style>
+</head>
+<body>
+  <h1>Manage Moodle User Context Roles</h1>
+  <main>
+    <div id="login-form">
+      <label for="moodle-uri">Moodle URI:</label>
+      <input type="text" id="moodle-uri" value="" />
+      <label for="service-name">Service Name:</label>
+      <input type="text" id="service-name" value="" />
+      <label for="username">Username:</label>
+      <input type="text" id="username" value="" />
+      <label for="password">Password:</label>
+      <input type="password" id="password" value="" />
+      <button type="button" id="login-button">Login</button>
+      <pre>
+Requirements:
+- A web service with access to the following functions
+  - core_user_get_users_by_field
+  - core_role_assign_roles
+  - core_role_unassign_roles
+- A role with the following capabilities
+  - moodle/role:assign
+  - moodle/user:viewdetails
+  - moodle/user:viewhiddendetails
+  - moodle/course:useremail
+  - moodle/user:update
+  - moodle/webservice:createtoken
+- A user
+  - assigned as an authorized user of the web service mentioned above
+  - assigned the role mentioned above at the system level
+  - allowed to assign specific roles in question
+      </pre>
+    </div>
+    <div id="process-form" style="display:none;">
+      <label for="bulk-action">Action:</label>
+      <select id="bulk-action">
+        <option value="assign">Assign</option>
+        <option value="unassign">Unassign</option>
+      </select>
+      <label for="roleid">Role ID:</label>
+      <input type="text" id="roleid" value="" />
+      <label for="user-batch-size">User Batch Size:</label>
+      <input type="text" id="user-batch-size" value="100" />
+      <label for="action-batch-size">Action Batch Size:</label>
+      <input type="text" id="action-batch-size" value="100" />
+      <pre>
+Place role assignments in the box below.
+Formatted one assignment per line with usernames separated by a comma.
+
+Example:
+  username,context-username
+  mentor01,student01
+      </pre>
+      <textarea id="input" rows="10" cols="30">
+parent02,stu01
+parent01,stu01
+parent03,stu02
+parent02,stu02
+parent03,stu03
+parent04,stu03
+      </textarea>
+      <br>
+      <button type="button" id="process-button">Process</button>
+      <button type="button" id="clear-cache-button">Clear User Cache (<span>0</span>)</button>
+    </div>
+  </main>
+  <script>
+let token = null;
+let ws_uri = null;
+
+let login_cache;
+if(localStorage.getItem('login_cache') === null){
+  login_cache = {moodle_uri:'', service_name:'', username:''};
+} else {
+  login_cache = JSON.parse(localStorage.getItem('login_cache'));
+}
+document.getElementById('moodle-uri').value = login_cache.moodle_uri;
+document.getElementById('service-name').value = login_cache.service_name;
+document.getElementById('username').value = login_cache.username;
+
+let user_cache;
+if(localStorage.getItem('user_cache') === null){
+  user_cache = {};
+} else {
+  user_cache = JSON.parse(localStorage.getItem('user_cache'));
+}
+document.querySelector('#clear-cache-button span').innerText = Object.keys(user_cache).length
+
+const array_chunk = function*(a, n) {
+  for (let i = 0; i < a.length; i += n) {
+    yield a.slice(i, i + n);
+  }
+};
+
+const wserror = function(promise){
+  return promise
+    .then(function(response){
+      if(!response.ok){
+        throw new Error(`Error ${response.status}: ${response.statusText}`);
+      }
+      return response.json();
+    })
+    .then(function(response){
+      if(response !== null && response.hasOwnProperty('exception')){
+        throw new Error('Error: ' + JSON.stringify(response, null, 2));
+      }
+      return response;
+    });
+};
+
+const wsget = function(uri){
+  return wserror(fetch(uri));
+};
+
+const wspost = function(uri, params){
+  return wserror(fetch(uri, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'},
+        body: params
+    }));
+};
+
+const get_users_by_field = function(field, values){
+  const uri = `${ws_uri}&wsfunction=core_user_get_users_by_field`;
+  return wspost(
+      uri,
+      values.reduce(
+        (usp, elt, idx) => {usp.append(`values[${idx}]`, elt);return usp;}, 
+        new URLSearchParams('field=' + field)
+      )
+    );
+};
+
+const assign_user_context_roles = function(roleid, assignments){
+  const uri = `${ws_uri}&wsfunction=core_role_assign_roles`;
+  return wspost(
+      uri,
+      assignments.reduce(
+        (usp, elt, idx) => {
+          if(user_cache.hasOwnProperty(elt[0]) && user_cache.hasOwnProperty(elt[1])){
+            usp.append(`assignments[${idx}][roleid]`, roleid);
+            usp.append(`assignments[${idx}][userid]`, user_cache[elt[0]]);
+            usp.append(`assignments[${idx}][contextlevel]`, 'user');
+            usp.append(`assignments[${idx}][instanceid]`, user_cache[elt[1]]);
+          }else{
+            console.error(`Unable to assign role ${elt[0]} -> ${elt[1]}. User not found.`)
+          }
+          return usp;
+        }, 
+        new URLSearchParams()
+      )
+    );
+};
+
+const unassign_user_context_roles = function(roleid, unassignments){
+  const uri = `${ws_uri}&wsfunction=core_role_unassign_roles`;
+  return wspost(
+      uri,
+      unassignments.reduce(
+        (usp, elt, idx) => {
+          if(user_cache.hasOwnProperty(elt[0]) && user_cache.hasOwnProperty(elt[1])){
+            usp.append(`unassignments[${idx}][roleid]`, roleid);
+            usp.append(`unassignments[${idx}][userid]`, user_cache[elt[0]]);
+            usp.append(`unassignments[${idx}][contextlevel]`, 'user');
+            usp.append(`unassignments[${idx}][instanceid]`, user_cache[elt[1]]);
+          }else{
+            console.error(`Unable to unassign role ${elt[0]} -> ${elt[1]}. User not found.`)
+          }
+          return usp;
+        }, 
+        new URLSearchParams()
+      )
+    );
+};
+
+document.getElementById('clear-cache-button').onclick = function(){
+  user_cache = {};
+  localStorage.setItem('user_cache', JSON.stringify(user_cache));
+  document.querySelector('#clear-cache-button span').innerText = '0' ;
+};
+
+document.getElementById('login-button').onclick = function(){
+  const moodle_uri = document.getElementById('moodle-uri').value;
+  const service_name = document.getElementById('service-name').value;
+  const username = document.getElementById('username').value;
+  const password = document.getElementById('password').value;
+  const uri = `${moodle_uri}login/token.php?username=${username}&password=${password}&service=${service_name}`;
+  wsget(uri)
+  .then(function(response){
+    if(response.hasOwnProperty('token')){
+      token = response;
+      ws_uri = `${moodle_uri}webservice/rest/server.php?wstoken=${token.token}&moodlewsrestformat=json`;
+      login_cache.moodle_uri = moodle_uri;
+      login_cache.service_name = service_name;
+      login_cache.username = username;
+      localStorage.setItem('login_cache', JSON.stringify(login_cache));
+      document.getElementById('login-form').style.display = 'none';
+      document.getElementById('process-form').style.display = 'block';
+    }else{
+      alert('Unable to log in. Please try again.');
+      console.error(response);
+    }
+  })
+  .catch(function(error){
+    alert('Error while attempting to log in. Please try again.');
+    console.error(error);
+  });
+};
+
+document.getElementById('process-button').onclick = function(){(async function(){
+  const bulk_action = document.getElementById('bulk-action').value;
+  const roleid = document.getElementById('roleid').value * 1;
+  const user_batch_size = document.getElementById('user-batch-size').value * 1;
+  const action_batch_size = document.getElementById('action-batch-size').value * 1;
+  const input = document.getElementById('input').value;
+  const relationships = input.trim().split('\n').map(item => item.split(','));
+  const unique_users = new Set(relationships.flat());
+  const needed_users = [...unique_users].filter(u => !user_cache.hasOwnProperty(u));
+  
+  for(const batch of array_chunk(needed_users, user_batch_size)){
+    await get_users_by_field('username', batch)
+      .then(function(response){
+        for(const user of response){
+          user_cache[user.username] = user.id;
+        }
+        localStorage.setItem('user_cache', JSON.stringify(user_cache));
+        document.querySelector('#clear-cache-button span').innerText = Object.keys(user_cache).length;
+      })
+      .catch(function(error){
+        console.error(error);
+        console.error('Error while looking up users. Batch:');
+        console.error(batch);
+      });
+  }
+  
+  for(const batch of array_chunk(relationships, action_batch_size)){
+    await (({
+        'assign':assign_user_context_roles, 
+        'unassign':unassign_user_context_roles
+      })[bulk_action])(roleid, batch)
+    .catch(function(error){
+      console.error(error);
+      console.error('Error while processing batch:');
+      console.error(batch);
+    });
+  }
+  
+  alert('Process Complete');
+})();};
+  </script>
+</body>
+</html>
