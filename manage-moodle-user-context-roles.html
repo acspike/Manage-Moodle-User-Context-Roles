@@ -221,7 +221,7 @@ document.getElementById('process-button').onclick = function(){(async function()
   const user_batch_size = document.getElementById('user-batch-size').value * 1;
   const action_batch_size = document.getElementById('action-batch-size').value * 1;
   const input = document.getElementById('input').value;
-  const relationships = input.trim().split('\n').map(item => item.split(','));
+  const relationships = input.trim().split('\n').map(item => item.split(',').map(i => i.trim()));
   const unique_users = new Set(relationships.flat());
   const needed_users = [...unique_users].filter(u => !user_cache.hasOwnProperty(u));
   
